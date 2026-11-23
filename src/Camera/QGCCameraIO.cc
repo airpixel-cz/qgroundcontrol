@@ -26,6 +26,9 @@ QGCCameraParamIO::QGCCameraParamIO(MavlinkCameraControlInterface *control, Fact 
     _paramWriteTimer.setInterval(3000);
     _paramRequestTimer.setSingleShot(true);
     _paramRequestTimer.setInterval(3500);
+    _actionTimer.setSingleShot(true);
+    _actionTimer.setInterval(3000);
+    (void) connect(&_actionTimer, &QTimer::timeout, this, &QGCCameraParamIO::_actionTimeout);
 
     if (_fact->writeOnly()) {
         // Write mode is always "done" as it won't ever read
@@ -101,6 +104,14 @@ void QGCCameraParamIO::_paramRequestTimeout()
     }
 }
 
+void QGCCameraParamIO::_actionTimeout()
+{
+    // Sending it again could run the action twice
+    qCWarning(QGCCameraParamIOLog) << "No response for action:" << _fact->name();
+    _actionPending = false;
+    _control->_actionDone(_fact->name(), MavlinkCameraControlInterface::kActionTimedOut);
+}
+
 void QGCCameraParamIO::_paramWriteTimeout()
 {
     if (++_sentRetries > kMaxRetries) {
@@ -109,7 +120,7 @@ void QGCCameraParamIO::_paramWriteTimeout()
     } else {
         // Send it again
         qCDebug(QGCCameraParamIOLog) << "Param set retry:" << _fact->name() << _sentRetries;
-        _sendParameter();
+        _sendParameter(_fact->rawValue());
         _paramWriteTimer.start();
     }
 }
@@ -128,14 +139,15 @@ void QGCCameraParamIO::_containerRawValueChanged(const QVariant &value)
 {
     Q_UNUSED(value);
 
-    if (!_fact->readOnly()) {
+    if (!_fact->readOnly() && !_actionOnly) {
         qCDebug(QGCCameraParamIOLog) << "Update Fact from camera" << _fact->name();
         _sentRetries = 0;
-        _sendParameter();
+        _sendParameter(_fact->rawValue());
+        _paramWriteTimer.start();
     }
 }
 
-void QGCCameraParamIO::_sendParameter()
+void QGCCameraParamIO::_sendParameter(const QVariant& rawValue)
 {
     SharedLinkInterfacePtr sharedLink = _vehicle->vehicleLinkManager()->primaryLink().lock();
     if (sharedLink) {
@@ -148,36 +160,36 @@ void QGCCameraParamIO::_sendParameter()
         switch (factType) {
         case FactMetaData::valueTypeUint8:
         case FactMetaData::valueTypeBool:
-            union_value.param_uint8 = static_cast<uint8_t>(_fact->rawValue().toUInt(&ok));
+            union_value.param_uint8 = static_cast<uint8_t>(rawValue.toUInt(&ok));
             break;
         case FactMetaData::valueTypeInt8:
-            union_value.param_int8 = static_cast<int8_t>(_fact->rawValue().toInt(&ok));
+            union_value.param_int8 = static_cast<int8_t>(rawValue.toInt(&ok));
             break;
         case FactMetaData::valueTypeUint16:
-            union_value.param_uint16 = static_cast<uint16_t>(_fact->rawValue().toUInt(&ok));
+            union_value.param_uint16 = static_cast<uint16_t>(rawValue.toUInt(&ok));
             break;
         case FactMetaData::valueTypeInt16:
-            union_value.param_int16 = static_cast<int16_t>(_fact->rawValue().toInt(&ok));
+            union_value.param_int16 = static_cast<int16_t>(rawValue.toInt(&ok));
             break;
         case FactMetaData::valueTypeUint32:
-            union_value.param_uint32 = static_cast<uint32_t>(_fact->rawValue().toUInt(&ok));
+            union_value.param_uint32 = static_cast<uint32_t>(rawValue.toUInt(&ok));
             break;
         case FactMetaData::valueTypeInt64:
-            union_value.param_int64 = static_cast<int64_t>(_fact->rawValue().toLongLong(&ok));
+            union_value.param_int64 = static_cast<int64_t>(rawValue.toLongLong(&ok));
             break;
         case FactMetaData::valueTypeUint64:
-            union_value.param_uint64 = static_cast<uint64_t>(_fact->rawValue().toULongLong(&ok));
+            union_value.param_uint64 = static_cast<uint64_t>(rawValue.toULongLong(&ok));
             break;
         case FactMetaData::valueTypeFloat:
-            union_value.param_float = _fact->rawValue().toFloat(&ok);
+            union_value.param_float = rawValue.toFloat(&ok);
             break;
         case FactMetaData::valueTypeDouble:
-            union_value.param_double = _fact->rawValue().toDouble(&ok);
+            union_value.param_double = rawValue.toDouble(&ok);
             break;
             // String and custom are the same for now
         case FactMetaData::valueTypeString:
         case FactMetaData::valueTypeCustom: {
-            const QByteArray custom = _fact->rawValue().toByteArray();
+            const QByteArray custom = rawValue.toByteArray();
             (void) memcpy(union_value.bytes, custom.constData(), static_cast<size_t>(std::max(custom.size(), static_cast<qsizetype>(MAVLINK_MSG_PARAM_EXT_SET_FIELD_PARAM_VALUE_LEN))));
             break;
         }
@@ -185,12 +197,12 @@ void QGCCameraParamIO::_sendParameter()
             qCCritical(QGCCameraParamIOLog) << "Unsupported fact type" << factType << "for" << _fact->name();
             Q_FALLTHROUGH();
         case FactMetaData::valueTypeInt32:
-            union_value.param_int32 = static_cast<int32_t>(_fact->rawValue().toInt(&ok));
+            union_value.param_int32 = static_cast<int32_t>(rawValue.toInt(&ok));
             break;
         }
 
         if (!ok) {
-            qCCritical(QGCCameraParamIOLog) << "Invalid value for" << _fact->name() << ":" << _fact->rawValue();
+            qCCritical(QGCCameraParamIOLog) << "Invalid value for" << _fact->name() << ":" << rawValue;
         }
 
         (void) memcpy(&p.param_value[0], &union_value.bytes[0], MAVLINK_MSG_PARAM_EXT_SET_FIELD_PARAM_VALUE_LEN);
@@ -204,12 +216,31 @@ void QGCCameraParamIO::_sendParameter()
                                                    p.target_component, p.param_id, p.param_value, p.param_type);
         (void) _vehicle->sendMessageOnLinkThreadSafe(sharedLink.get(), msg);
     }
-
-    _paramWriteTimer.start();
 }
 
 void QGCCameraParamIO::handleParamAck(const mavlink_param_ext_ack_t &ack)
 {
+    if (_actionPending) {
+        _actionTimer.stop();
+        if (ack.param_result == PARAM_ACK_IN_PROGRESS) {
+            // Wait a bit longer for this one
+            qCDebug(QGCCameraParamIOLog) << "Action in progress:" << _fact->name();
+            _actionTimer.start();
+            return;
+        }
+        _actionPending = false;
+        if (ack.param_result == PARAM_ACK_ACCEPTED) {
+            // Keeps a highlighted button in step with the camera
+            _fact->containerSetRawValue(_valueFromMessage(ack.param_value, ack.param_type));
+        }
+        _control->_actionDone(_fact->name(), ack.param_result);
+        return;
+    }
+    if (_actionOnly) {
+        // A late answer to an action that already timed out
+        return;
+    }
+
     _paramWriteTimer.stop();
 
     switch (ack.param_result) {
@@ -362,7 +393,16 @@ void QGCCameraParamIO::sendParameter(bool updateUI)
     qCDebug(QGCCameraParamIOLog) << "Send Fact" << _fact->name();
     _sentRetries = 0;
     _updateOnSet = updateUI;
-    _sendParameter();
+    _sendParameter(_fact->rawValue());
+    _paramWriteTimer.start();
+}
+
+void QGCCameraParamIO::sendAction(const QVariant& value)
+{
+    qCDebug(QGCCameraParamIOLog) << "Send action" << _fact->name() << value;
+    _actionPending = true;
+    _sendParameter(value);
+    _actionTimer.start();
 }
 
 void QGCCameraParamIO::setParamRequest()

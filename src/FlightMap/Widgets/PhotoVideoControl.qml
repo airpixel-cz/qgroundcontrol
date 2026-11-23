@@ -406,6 +406,15 @@ Rectangle {
 
                         property int dynamicRows: 8
 
+                        // Camera definition groups: room between their background and content, and below them
+                        readonly property real cameraGroupPadding: ScreenTools.defaultFontPixelWidth
+                        readonly property real cameraGroupSpacing: ScreenTools.defaultFontPixelHeight / 2
+
+                        // Group of the camera definition entry at index, undefined if none
+                        function cameraGroupAt(index) {
+                            return index < _camera.activeSettings.length ? _camera.elementInfo(_camera.activeSettings[index]).group : undefined
+                        }
+
                         // First column
                         QGCLabel {
                             text: qsTr("Camera")
@@ -433,10 +442,80 @@ Rectangle {
 
                         // Mavlink Camera Protocol active settings
                         Repeater {
+                            id: cameraLabelRepeater
                             model: _camera.activeSettings
 
                             QGCLabel {
-                                text: _camera.getFact(modelData).shortDescription
+                                id: settingLabel
+
+                                property var _element: _camera.elementInfo(modelData)
+                                property bool _isText: _element.type === "text"
+                                property bool _isGroup: _element.type === "group"
+                                property bool _isFullWidth: _isText || _isGroup
+                                property bool _inGroup: _element.group !== undefined
+                                property bool _isGroupEnd: _inGroup && gridLayout.cameraGroupAt(index + 1) !== _element.group
+
+                                // Bottom of the last row shown of this group, which is made of the entries after it
+                                function _groupBottom() {
+                                    let bottom = y + height
+                                    // The rows are created one at a time: look again once all of them are there
+                                    if (cameraLabelRepeater.count + cameraControlRepeater.count < 2 * _camera.activeSettings.length) {
+                                        return bottom
+                                    }
+                                    for (let i = index + 1; i < _camera.activeSettings.length; i++) {
+                                        if (_camera.elementInfo(_camera.activeSettings[i]).group !== modelData) {
+                                            break
+                                        }
+                                        const label = cameraLabelRepeater.itemAt(i)
+                                        const control = cameraControlRepeater.itemAt(i)
+                                        if (label && label.visible) {
+                                            bottom = Math.max(bottom, label.y + label.height)
+                                        }
+                                        if (control && control.visible) {
+                                            bottom = Math.max(bottom, control.y + control.height)
+                                        }
+                                    }
+                                    return bottom
+                                }
+
+                                text: _isText ? _element.text : (_isGroup ? _element.title : _camera.getFact(modelData).shortDescription)
+                                // A camera definition text or group title spans both columns and wraps to their width
+                                Layout.columnSpan: _isFullWidth ? 2 : 1
+                                Layout.fillWidth: _isFullWidth
+                                Layout.preferredWidth: _isFullWidth ? 0 : -1
+                                // A group without a title takes no room
+                                Layout.preferredHeight: _isGroup && _element.title === "" ? 0 : -1
+                                // Keeps a group's content off the edges of its background, and the next row off the group
+                                Layout.leftMargin: _isGroup || _inGroup ? gridLayout.cameraGroupPadding : 0
+                                Layout.rightMargin: _isFullWidth && (_isGroup || _inGroup) ? gridLayout.cameraGroupPadding : 0
+                                // Without a title the row spacing below the group's empty row already adds to the padding
+                                Layout.topMargin: !_isGroup ? 0 : (_element.title === "" ? Math.max(0, gridLayout.cameraGroupPadding - gridLayout.rowSpacing)
+                                                                                         : gridLayout.cameraGroupPadding)
+                                Layout.bottomMargin: _isGroupEnd ? gridLayout.cameraGroupPadding + gridLayout.cameraGroupSpacing : 0
+                                wrapMode: _isFullWidth ? Text.WordWrap : Text.NoWrap
+                                font.bold: _isGroup || (_isText && _element.bold)
+                                font.pointSize: !_isText || _element.size === "default" ? ScreenTools.defaultFontPointSize
+                                              : (_element.size === "small" ? ScreenTools.smallFontPointSize : ScreenTools.largeFontPointSize)
+                                horizontalAlignment: !_isText || _element.align === "left" ? Text.AlignLeft
+                                                   : (_element.align === "center" ? Text.AlignHCenter : Text.AlignRight)
+
+                                // Camera definition group: the background behind its title and rows. As a child of the
+                                // title it is drawn under the rows that come after it.
+                                Rectangle {
+                                    readonly property real _padding: gridLayout.cameraGroupPadding
+                                    // Padding above the content, the first row of a group without a title coming after the row spacing
+                                    readonly property real _top: settingLabel._isGroup && settingLabel._element.title === "" ? gridLayout.rowSpacing - _padding : -_padding
+
+                                    visible: settingLabel._isGroup
+                                    z: -1
+                                    // Across the whole grid, the title being inset by the padding
+                                    x: -_padding
+                                    y: _top
+                                    width: gridLayout.width
+                                    height: settingLabel._groupBottom() - settingLabel.y - _top + _padding
+                                    radius: settingLabel._isGroup && settingLabel._element.radius >= 0 ? settingLabel._element.radius : ScreenTools.defaultBorderRadius
+                                    color: settingLabel._isGroup && settingLabel._element.color !== "" ? settingLabel._element.color : qgcPal.windowInset
+                                }
                             }
                         }
 
@@ -503,18 +582,77 @@ Rectangle {
 
                         // Mavlink Camera Protocol active settings
                         Repeater {
+                            id: cameraControlRepeater
                             model: _camera.activeSettings
 
                             RowLayout {
+                                id: settingRow
                                 Layout.fillWidth: true
+                                // Keeps a group's content off the edges of its background, and the next row off the group
+                                Layout.rightMargin: _inGroup ? gridLayout.cameraGroupPadding : 0
+                                Layout.bottomMargin: _isGroupEnd ? gridLayout.cameraGroupPadding + gridLayout.cameraGroupSpacing : 0
                                 spacing: ScreenTools.defaultFontPixelWidth
 
-                                property var _fact: _camera.getFact(modelData)
-                                property bool _isBool: _fact.typeIsBool
-                                property bool _isCombo: !_isBool && _fact.enumStrings.length > 0
-                                property bool _isSlider: _fact && !isNaN(_fact.increment)
-                                property bool _isEdit: !_isBool && !_isSlider && _fact.enumStrings.length < 1
+                                // A camera definition text or group title has its row to itself in the first column
+                                visible: !_isText && !_isGroup
+
+                                property string _name: modelData
+                                property var _action: _camera.elementInfo(modelData)
+                                property bool _isText: _action.type === "text"
+                                property bool _isGroup: _action.type === "group"
+                                property bool _isAction: _action.type === "action"
+                                property bool _isParameter: _action.type === "parameter"
+                                property var _fact: _isParameter || _isAction ? _camera.getFact(modelData) : null
+                                property bool _isBool: _isParameter && _fact.typeIsBool
+                                property bool _isCombo: _isParameter && !_isBool && _fact.enumStrings.length > 0
+                                property bool _isSlider: _isParameter && _fact && !isNaN(_fact.increment)
+                                property bool _isEdit: _isParameter && !_isBool && !_isSlider && _fact.enumStrings.length < 1
                                 property bool _isReadOnly: _fact && _fact.readOnly
+                                property bool _actionPending: _isAction && _camera.pendingActions.indexOf(modelData) !== -1
+                                property bool _inGroup: _action.group !== undefined
+                                property bool _isGroupEnd: _inGroup && gridLayout.cameraGroupAt(index + 1) !== _action.group
+
+                                // Camera definition action: a button for each value
+                                Repeater {
+                                    model: settingRow._isAction ? settingRow._action.buttons : []
+
+                                    QGCButton {
+                                        Layout.fillWidth: true
+                                        text: modelData.label
+                                        enabled: !settingRow._actionPending
+                                        checked: settingRow._action.highlight && settingRow._fact.rawValue == modelData.value
+                                        onClicked: {
+                                            if (modelData.confirm) {
+                                                actionPromptFactory.open({
+                                                    title: modelData.confirmTitle !== "" ? modelData.confirmTitle : settingRow._action.description,
+                                                    text: modelData.confirmText,
+                                                    acceptButtonText: modelData.confirmYes,
+                                                    rejectButtonText: modelData.confirmNo,
+                                                    buttonIndex: index
+                                                })
+                                            } else {
+                                                _camera.triggerAction(settingRow._name, index)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                QGCPopupDialogFactory {
+                                    id: actionPromptFactory
+
+                                    dialogComponent: actionPromptComponent
+                                }
+
+                                Component {
+                                    id: actionPromptComponent
+
+                                    QGCSimpleMessageDialog {
+                                        property int buttonIndex: -1
+
+                                        buttons: Dialog.Yes | Dialog.No
+                                        onAccepted: _camera.triggerAction(settingRow._name, buttonIndex)
+                                    }
+                                }
 
                                 FactComboBox {
                                     Layout.fillWidth: true
@@ -532,23 +670,25 @@ Rectangle {
                                 }
                                 QGCSlider {
                                     Layout.fillWidth: true
-                                    to: parent._fact.max
-                                    from: parent._fact.min
-                                    stepSize: parent._fact.increment
+                                    to: parent._fact ? parent._fact.max : 1
+                                    from: parent._fact ? parent._fact.min : 0
+                                    stepSize: parent._fact ? parent._fact.increment : 0
                                     visible: parent._isSlider
                                     enabled: !parent._isReadOnly
                                     live: false
                                     property bool initialized: false
 
                                     onValueChanged: {
-                                        if (!initialized) {
+                                        if (!initialized || !parent._isSlider) {
                                             return
                                         }
                                         parent._fact.value = value
                                     }
 
                                     Component.onCompleted: {
-                                        value = parent._fact.value
+                                        if (parent._fact) {
+                                            value = parent._fact.value
+                                        }
                                         initialized = true
                                     }
                                 }

@@ -50,7 +50,417 @@ MockConfiguration* newMockConfiguration(const QString& name)
     return qScopeGuard([savePathFact, originalSavePath]() { savePathFact->setRawValue(originalSavePath); });
 }
 
+constexpr char kActionDefinition[] = R"(<?xml version="1.0" encoding="UTF-8" ?>
+<mavlinkcamera>
+    <definition version="1">
+        <model>ActionCam</model>
+        <vendor>Acme</vendor>
+    </definition>
+    <parameters>
+        <parameter name="CAM_TESTMODE" type="uint32" default="0" writeonly="1">
+            <description>Test Mode</description>
+            <options>
+                <option name="Photo" value="0" />
+                <option name="Video" value="1">
+                    <exclusions>
+                        <exclude>CAM_AFONCE</exclude>
+                        <exclude>TXT_NOTE</exclude>
+                    </exclusions>
+                </option>
+            </options>
+        </parameter>
+        <text name="TXT_HEADER" size="large" bold="1" align="center">
+            Header
+        </text>
+        <action name="CAM_AFONCE" type="uint8">
+            <description>Autofocus</description>
+            <buttons><button value="1" label="Focus Now" /></buttons>
+        </action>
+        <text>Unnamed note</text>
+        <text name="TXT_NOTE" size="huge" align="middle">Note</text>
+        <parameter name="CAM_PALETTE" type="uint8" default="0" writeonly="1">
+            <description>Palette</description>
+            <options>
+                <option name="White" value="0" />
+                <option name="Black" value="1" />
+            </options>
+        </parameter>
+        <action name="CAM_QUICKPAL" type="uint8" highlight="1">
+            <description>Quick Palette</description>
+            <buttons>
+                <button value="0" label="White" />
+                <button value="1" label="Black" />
+            </buttons>
+        </action>
+        <parameter name="CAM_HIDDEN" type="uint8" default="0" control="0" writeonly="1">
+            <description>Hidden</description>
+        </parameter>
+        <action name="CAM_FACTRESET" type="uint8">
+            <description>Factory Reset</description>
+            <buttons>
+                <button value="1">
+                    <confirm title="Factory Reset" yes="Reset" no="Keep">All settings will be lost.</confirm>
+                </button>
+            </buttons>
+        </action>
+        <action name="CAM_BADVALUE" type="uint8">
+            <description>Bad Value</description>
+            <buttons>
+                <button value="300" label="Too Big" />
+                <button value="2" label="Fine" />
+            </buttons>
+        </action>
+        <action name="CAM_NOBUTTONS" type="uint8">
+            <description>No Buttons</description>
+            <buttons><button value="abc" /></buttons>
+        </action>
+        <action name="CAM_BADTYPE" type="button">
+            <description>Bad Type</description>
+            <buttons><button value="1" /></buttons>
+        </action>
+        <action name="CAM_PALETTE" type="uint8">
+            <description>Duplicate Name</description>
+            <buttons><button value="1" /></buttons>
+        </action>
+        <text name="CAM_TESTMODE">Duplicate Name</text>
+    </parameters>
+</mavlinkcamera>
+)";
+
+mavlink_param_ext_ack_t paramExtAck(const char* paramId, uint8_t result, uint8_t value)
+{
+    mavlink_param_ext_ack_t ack{};
+    (void) qstrncpy(ack.param_id, paramId, sizeof(ack.param_id));
+    ack.param_value[0] = static_cast<char>(value);
+    ack.param_type = MAV_PARAM_EXT_TYPE_UINT8;
+    ack.param_result = result;
+    return ack;
+}
+
 }  // namespace
+
+/// A camera of model "ActionCam" whose definition is served from the definition cache. The
+/// definition is loaded by the time the camera is constructed.
+std::unique_ptr<VehicleCameraControl> VehicleCameraControlTest::_cameraWithDefinition(const QByteArray& definition)
+{
+    mavlink_camera_information_t info{};
+    memcpy(info.vendor_name, "Acme", 5);
+    memcpy(info.model_name, "ActionCam", 10);
+    static constexpr char uri[] = "http://127.0.0.1/actioncam.xml";
+    memcpy(info.cam_definition_uri, uri, sizeof(uri));
+
+    const QString cacheDir = SettingsManager::instance()->appSettings()->parameterSavePath();
+    QFile cacheFile(QDir(cacheDir).filePath(
+        VehicleCameraControl::cacheFileToken(QStringLiteral("Acme"), QStringLiteral("ActionCam"), 0) +
+        QStringLiteral(".xml")));
+    if (!cacheFile.open(QIODevice::WriteOnly) || (cacheFile.write(definition) < 0)) {
+        return nullptr;
+    }
+    cacheFile.close();
+
+    return std::make_unique<CameraControlProbe>(&info, _vehicle, MAV_COMP_ID_CAMERA6);
+}
+
+/// A camera whose definition is kActionDefinition. The parse warnings for its invalid actions
+/// and texts are verified here.
+std::unique_ptr<VehicleCameraControl> VehicleCameraControlTest::_actionCamera()
+{
+    expectLogMessage("Camera.VehicleCameraControl", QtWarningMsg,
+                     QRegularExpression(QStringLiteral("Invalid size for text \"TXT_NOTE\" : \"huge\"")));
+    expectLogMessage("Camera.VehicleCameraControl", QtWarningMsg,
+                     QRegularExpression(QStringLiteral("Invalid align for text \"TXT_NOTE\" : \"middle\"")));
+    expectLogMessage("Camera.VehicleCameraControl", QtWarningMsg,
+                     QRegularExpression(QStringLiteral("Invalid button value for action \"CAM_BADVALUE\"")));
+    expectLogMessage("Camera.VehicleCameraControl", QtWarningMsg,
+                     QRegularExpression(QStringLiteral("Invalid button value for action \"CAM_NOBUTTONS\"")));
+    expectLogMessage("Camera.VehicleCameraControl", QtWarningMsg,
+                     QRegularExpression(QStringLiteral("Action \"CAM_NOBUTTONS\" has no valid buttons")));
+    expectLogMessage("Camera.VehicleCameraControl", QtWarningMsg,
+                     QRegularExpression(QStringLiteral("Unsupported type for action \"CAM_BADTYPE\"")));
+    expectLogMessage("Camera.VehicleCameraControl", QtWarningMsg,
+                     QRegularExpression(QStringLiteral("Duplicate action name: \"CAM_PALETTE\"")));
+    expectLogMessage("Camera.VehicleCameraControl", QtWarningMsg,
+                     QRegularExpression(QStringLiteral("Duplicate text name: \"CAM_TESTMODE\"")));
+
+    auto camera = _cameraWithDefinition(kActionDefinition);
+
+    for (int i = 0; i < 8; i++) {
+        verifyExpectedLogMessage();
+    }
+    if (camera) {
+        // The camera reports the highlighted action's value, which answers the definition's request for it
+        mavlink_param_ext_value_t value{};
+        (void) qstrncpy(value.param_id, "CAM_QUICKPAL", sizeof(value.param_id));
+        value.param_type = MAV_PARAM_EXT_TYPE_UINT8;
+        camera->handleParamExtValue(value);
+    }
+    return camera;
+}
+
+void VehicleCameraControlTest::_testDefinitionLoad()
+{
+    _connectVehicle(newMockConfiguration(QStringLiteral("CameraDefinitionLoadTest")));
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    QTemporaryDir saveRoot;
+    QVERIFY(saveRoot.isValid());
+    const auto restoreSavePath = overrideSavePath(saveRoot.path());
+
+    auto camera = _actionCamera();
+    QVERIFY(camera);
+
+    // Actions and texts are listed with the parameters, in definition order. A parameter without a
+    // control isn't listed, and invalid actions and duplicate names are dropped.
+    const QStringList expectedSettings = {
+        QStringLiteral("CAM_TESTMODE"), QStringLiteral("TXT_HEADER"),    QStringLiteral("CAM_AFONCE"),
+        QStringLiteral("#text2"),       QStringLiteral("TXT_NOTE"),      QStringLiteral("CAM_PALETTE"),
+        QStringLiteral("CAM_QUICKPAL"), QStringLiteral("CAM_FACTRESET"), QStringLiteral("CAM_BADVALUE")};
+    QCOMPARE(camera->activeSettings(), expectedSettings);
+    QCOMPARE(camera->elementInfo(QStringLiteral("CAM_PALETTE")).value(QStringLiteral("type")).toString(),
+             QStringLiteral("parameter"));
+
+    const QVariantMap focus = camera->elementInfo(QStringLiteral("CAM_AFONCE"));
+    QCOMPARE(focus.value(QStringLiteral("type")).toString(), QStringLiteral("action"));
+    QCOMPARE(focus.value(QStringLiteral("description")).toString(), QStringLiteral("Autofocus"));
+    const QVariantMap focusButton = focus.value(QStringLiteral("buttons")).toList().value(0).toMap();
+    QCOMPARE(focusButton.value(QStringLiteral("label")).toString(), QStringLiteral("Focus Now"));
+    QCOMPARE(focusButton.value(QStringLiteral("value")).toUInt(), 1u);
+    QCOMPARE(focusButton.value(QStringLiteral("confirm")).toBool(), false);
+
+    const QVariantMap resetButton =
+        camera->elementInfo(QStringLiteral("CAM_FACTRESET")).value(QStringLiteral("buttons")).toList().value(0).toMap();
+    QCOMPARE(resetButton.value(QStringLiteral("confirm")).toBool(), true);
+    QCOMPARE(resetButton.value(QStringLiteral("confirmTitle")).toString(), QStringLiteral("Factory Reset"));
+    QCOMPARE(resetButton.value(QStringLiteral("confirmText")).toString(), QStringLiteral("All settings will be lost."));
+    QCOMPARE(resetButton.value(QStringLiteral("confirmYes")).toString(), QStringLiteral("Reset"));
+    QCOMPARE(resetButton.value(QStringLiteral("confirmNo")).toString(), QStringLiteral("Keep"));
+
+    // Only the button whose value fits the type is kept
+    const QVariantList badValueButtons =
+        camera->elementInfo(QStringLiteral("CAM_BADVALUE")).value(QStringLiteral("buttons")).toList();
+    QCOMPARE(badValueButtons.size(), 1);
+    QCOMPARE(badValueButtons[0].toMap().value(QStringLiteral("label")).toString(), QStringLiteral("Fine"));
+
+    // The text is trimmed; invalid attribute values fall back to the defaults
+    const QVariantMap header = camera->elementInfo(QStringLiteral("TXT_HEADER"));
+    QCOMPARE(header.value(QStringLiteral("type")).toString(), QStringLiteral("text"));
+    QCOMPARE(header.value(QStringLiteral("text")).toString(), QStringLiteral("Header"));
+    QCOMPARE(header.value(QStringLiteral("size")).toString(), QStringLiteral("large"));
+    QCOMPARE(header.value(QStringLiteral("bold")).toBool(), true);
+    QCOMPARE(header.value(QStringLiteral("align")).toString(), QStringLiteral("center"));
+    const QVariantMap note = camera->elementInfo(QStringLiteral("TXT_NOTE"));
+    QCOMPARE(note.value(QStringLiteral("size")).toString(), QStringLiteral("default"));
+    QCOMPARE(note.value(QStringLiteral("align")).toString(), QStringLiteral("left"));
+
+    // Actions and texts are excluded like parameters
+    mavlink_param_ext_value_t value{};
+    (void) qstrncpy(value.param_id, "CAM_TESTMODE", sizeof(value.param_id));
+    value.param_type = MAV_PARAM_EXT_TYPE_UINT32;
+    value.param_value[0] = 1;
+    camera->handleParamExtValue(value);
+    QVERIFY(!camera->activeSettings().contains(QStringLiteral("CAM_AFONCE")));
+    QVERIFY(!camera->activeSettings().contains(QStringLiteral("TXT_NOTE")));
+}
+
+void VehicleCameraControlTest::_testDefinitionGroups()
+{
+    _connectVehicle(newMockConfiguration(QStringLiteral("CameraGroupsTest")));
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    QTemporaryDir saveRoot;
+    QVERIFY(saveRoot.isValid());
+    const auto restoreSavePath = overrideSavePath(saveRoot.path());
+
+    static constexpr char definition[] = R"(<?xml version="1.0" encoding="UTF-8" ?>
+<mavlinkcamera>
+    <definition version="1">
+        <model>ActionCam</model>
+        <vendor>Acme</vendor>
+    </definition>
+    <parameters>
+        <parameter name="CAM_TESTMODE" type="uint32" default="0" writeonly="1">
+            <description>Test Mode</description>
+            <options>
+                <option name="Photo" value="0" />
+                <option name="Video" value="1">
+                    <exclusions><exclude>GRP_PHOTO</exclude></exclusions>
+                </option>
+                <option name="NoLoose" value="2">
+                    <exclusions><exclude>CAM_LOOSE</exclude></exclusions>
+                </option>
+            </options>
+        </parameter>
+        <group name="GRP_PHOTO" title="Photo" color="#80FF0000" radius="8.5">
+            <text>Hint</text>
+            <parameter name="CAM_RES" type="uint8" default="0" writeonly="1">
+                <description>Resolution</description>
+            </parameter>
+            <group name="GRP_INNER">
+                <parameter name="CAM_INNER" type="uint8" default="0" writeonly="1">
+                    <description>Inner</description>
+                </parameter>
+            </group>
+        </group>
+        <group color="notacolor" radius="-2">
+            <parameter name="CAM_LOOSE" type="uint8" default="0" writeonly="1">
+                <description>Loose</description>
+            </parameter>
+        </group>
+        <group name="GRP_EMPTY" title="Nothing" />
+        <parameter name="CAM_AFTER" type="uint8" default="0" writeonly="1">
+            <description>After</description>
+        </parameter>
+    </parameters>
+</mavlinkcamera>
+)";
+    expectLogMessage(
+        "Camera.VehicleCameraControl", QtWarningMsg,
+        QRegularExpression(QStringLiteral("Groups can't be nested, the content belongs to group: \"GRP_PHOTO\"")));
+    expectLogMessage("Camera.VehicleCameraControl", QtWarningMsg,
+                     QRegularExpression(QStringLiteral("Invalid color for group \"#group2\" : \"notacolor\"")));
+    expectLogMessage("Camera.VehicleCameraControl", QtWarningMsg,
+                     QRegularExpression(QStringLiteral("Invalid radius for group \"#group2\" : \"-2\"")));
+    auto camera = _cameraWithDefinition(definition);
+    verifyExpectedLogMessage();
+    verifyExpectedLogMessage();
+    verifyExpectedLogMessage();
+    QVERIFY(camera);
+
+    // A group is listed before its entries; a nested group's entries belong to the outer one,
+    // and a group with nothing in it isn't listed
+    const QStringList expectedSettings = {QStringLiteral("CAM_TESTMODE"), QStringLiteral("GRP_PHOTO"),
+                                          QStringLiteral("#text1"),       QStringLiteral("CAM_RES"),
+                                          QStringLiteral("CAM_INNER"),    QStringLiteral("#group2"),
+                                          QStringLiteral("CAM_LOOSE"),    QStringLiteral("CAM_AFTER")};
+    QCOMPARE(camera->activeSettings(), expectedSettings);
+
+    const QVariantMap photo = camera->elementInfo(QStringLiteral("GRP_PHOTO"));
+    QCOMPARE(photo.value(QStringLiteral("type")).toString(), QStringLiteral("group"));
+    QCOMPARE(photo.value(QStringLiteral("title")).toString(), QStringLiteral("Photo"));
+    QCOMPARE(photo.value(QStringLiteral("color")).toString(), QStringLiteral("#80FF0000"));
+    QCOMPARE(photo.value(QStringLiteral("radius")).toDouble(), 8.5);
+    QCOMPARE(camera->elementInfo(QStringLiteral("CAM_INNER")).value(QStringLiteral("group")).toString(),
+             QStringLiteral("GRP_PHOTO"));
+    QVERIFY(!camera->elementInfo(QStringLiteral("CAM_AFTER")).contains(QStringLiteral("group")));
+
+    // An invalid color or radius leaves the standard one
+    const QVariantMap loose = camera->elementInfo(QStringLiteral("#group2"));
+    QCOMPARE(loose.value(QStringLiteral("color")).toString(), QString());
+    QVERIFY(loose.value(QStringLiteral("radius")).toDouble() < 0);
+
+    mavlink_param_ext_value_t value{};
+    (void) qstrncpy(value.param_id, "CAM_TESTMODE", sizeof(value.param_id));
+    value.param_type = MAV_PARAM_EXT_TYPE_UINT32;
+
+    // Excluding a group excludes everything in it
+    value.param_value[0] = 1;
+    camera->handleParamExtValue(value);
+    QCOMPARE(camera->activeSettings(), (QStringList{QStringLiteral("CAM_TESTMODE"), QStringLiteral("#group2"),
+                                                    QStringLiteral("CAM_LOOSE"), QStringLiteral("CAM_AFTER")}));
+
+    // A group with all its entries excluded isn't shown either
+    value.param_value[0] = 2;
+    camera->handleParamExtValue(value);
+    QVERIFY(!camera->activeSettings().contains(QStringLiteral("#group2")));
+    QVERIFY(camera->activeSettings().contains(QStringLiteral("GRP_PHOTO")));
+}
+
+void VehicleCameraControlTest::_testActionSendsEveryClickAndNeverResends()
+{
+    _connectVehicle(newMockConfiguration(QStringLiteral("CameraActionSendTest")));
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    QTemporaryDir saveRoot;
+    QVERIFY(saveRoot.isValid());
+    const auto restoreSavePath = overrideSavePath(saveRoot.path());
+
+    auto camera = _actionCamera();
+    QVERIFY(camera);
+    _mockLink->clearReceivedMavlinkMessageCounts();
+
+    camera->triggerAction(QStringLiteral("CAM_AFONCE"), 0);
+    QCOMPARE(camera->pendingActions(), QStringList{QStringLiteral("CAM_AFONCE")});
+    QTRY_COMPARE_WITH_TIMEOUT(_mockLink->receivedMavlinkMessageCount(MAVLINK_MSG_ID_PARAM_EXT_SET), 1,
+                              TestTimeout::longMs());
+
+    mavlink_message_t message{};
+    QVERIFY(_mockLink->lastReceivedMavlinkMessage(MAVLINK_MSG_ID_PARAM_EXT_SET, message));
+    mavlink_param_ext_set_t paramSet{};
+    mavlink_msg_param_ext_set_decode(&message, &paramSet);
+    QCOMPARE(QGCMAVLink::boundedStringField(paramSet.param_id), QStringLiteral("CAM_AFONCE"));
+    QCOMPARE(paramSet.param_type, static_cast<uint8_t>(MAV_PARAM_EXT_TYPE_UINT8));
+    QCOMPARE(static_cast<uint8_t>(paramSet.param_value[0]), static_cast<uint8_t>(1));
+    QCOMPARE(paramSet.target_component, static_cast<uint8_t>(MAV_COMP_ID_CAMERA6));
+
+    // A click while the camera hasn't answered sends nothing
+    camera->triggerAction(QStringLiteral("CAM_AFONCE"), 0);
+
+    camera->handleParamExtAck(paramExtAck("CAM_AFONCE", PARAM_ACK_ACCEPTED, 1));
+    QVERIFY(camera->pendingActions().isEmpty());
+
+    // The same value is sent again on the next click
+    camera->triggerAction(QStringLiteral("CAM_AFONCE"), 0);
+    QTRY_COMPARE_WITH_TIMEOUT(_mockLink->receivedMavlinkMessageCount(MAVLINK_MSG_ID_PARAM_EXT_SET), 2,
+                              TestTimeout::longMs());
+
+    // Unanswered, the action is reported as failed and never resent. Meanwhile the requests the
+    // camera sent on creation give up too, as no camera answers them.
+    ignoreLogMessage("Vehicle.MavCommandQueue", QtWarningMsg,
+                     QRegularExpression("Giving up sending command after max retries:"));
+    expectLogMessage("Camera.QGCCameraParamIO", QtWarningMsg,
+                     QRegularExpression(QStringLiteral("No response for action")));
+    expectLogMessage("Camera.VehicleCameraControl", QtWarningMsg,
+                     QRegularExpression(QStringLiteral("Camera action failed")));
+    expectAppMessage(QRegularExpression(QStringLiteral("Autofocus: no response from camera")));
+    QTRY_VERIFY_WITH_TIMEOUT(camera->pendingActions().isEmpty(), TestTimeout::longMs());
+    verifyExpectedLogMessage();
+    verifyExpectedLogMessage();
+    verifyExpectedLogMessage();
+    QCOMPARE(_mockLink->receivedMavlinkMessageCount(MAVLINK_MSG_ID_PARAM_EXT_SET), 2);
+
+    // A late answer is ignored: it neither reports the action again nor sends anything
+    camera->handleParamExtAck(paramExtAck("CAM_AFONCE", PARAM_ACK_FAILED, 1));
+    QVERIFY(camera->pendingActions().isEmpty());
+    QCOMPARE(_mockLink->receivedMavlinkMessageCount(MAVLINK_MSG_ID_PARAM_EXT_SET), 2);
+}
+
+void VehicleCameraControlTest::_testActionAnswerUpdatesHighlightAndReportsFailure()
+{
+    _connectVehicle(newMockConfiguration(QStringLiteral("CameraActionAnswerTest")));
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    QTemporaryDir saveRoot;
+    QVERIFY(saveRoot.isValid());
+    const auto restoreSavePath = overrideSavePath(saveRoot.path());
+
+    auto camera = _actionCamera();
+    QVERIFY(camera);
+    // The value the camera reported for the highlighted action
+    Fact* palette = camera->getFact(QStringLiteral("CAM_QUICKPAL"));
+    QVERIFY(palette);
+    QCOMPARE(palette->rawValue().toUInt(), 0u);
+
+    // In progress keeps the action waiting; accepted sets the value its highlight follows
+    camera->triggerAction(QStringLiteral("CAM_QUICKPAL"), 1);
+    camera->handleParamExtAck(paramExtAck("CAM_QUICKPAL", PARAM_ACK_IN_PROGRESS, 0));
+    QCOMPARE(camera->pendingActions(), QStringList{QStringLiteral("CAM_QUICKPAL")});
+    camera->handleParamExtAck(paramExtAck("CAM_QUICKPAL", PARAM_ACK_ACCEPTED, 1));
+    QVERIFY(camera->pendingActions().isEmpty());
+    QCOMPARE(palette->rawValue().toUInt(), 1u);
+
+    expectLogMessage("Camera.VehicleCameraControl", QtWarningMsg,
+                     QRegularExpression(QStringLiteral("Camera action failed")));
+    expectAppMessage(QRegularExpression(QStringLiteral("Factory Reset: rejected by camera")));
+    camera->triggerAction(QStringLiteral("CAM_FACTRESET"), 0);
+    camera->handleParamExtAck(paramExtAck("CAM_FACTRESET", PARAM_ACK_FAILED, 0));
+    verifyExpectedLogMessage();
+    verifyExpectedLogMessage();
+    QVERIFY(camera->pendingActions().isEmpty());
+}
 
 void VehicleCameraControlTest::_testNameFieldReadIsBounded()
 {

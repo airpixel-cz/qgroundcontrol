@@ -1,8 +1,11 @@
 #pragma once
 
+#include <memory>
+
 #include "UnitTest.h"
 
 class MavlinkCameraControlInterface;
+class VehicleCameraControl;
 class MockConfiguration;
 class MockLink;
 class Vehicle;
@@ -26,12 +29,18 @@ private slots:
     void _testConstructorBuildsCacheFileFromBoundedNames();
     void _testFtpDefinitionDownloadRefusedFallsBack();
     UT_PARAMETERIZED_TEST(_testFtpDefinitionDownloadIsSavedAsCacheFile);
+    void _testDefinitionLoad();
+    void _testDefinitionGroups();
+    void _testActionSendsEveryClickAndNeverResends();
+    void _testActionAnswerUpdatesHighlightAndReportsFailure();
 
 private:
     void _connectVehicle(MockConfiguration* mockConfig);
     /// The mock vehicle's first camera (MAV_COMP_ID_CAMERA), once both of its cameras are discovered; null if they
     /// aren't in time.
     MavlinkCameraControlInterface* _firstCamera();
+    std::unique_ptr<VehicleCameraControl> _cameraWithDefinition(const QByteArray& definition);
+    std::unique_ptr<VehicleCameraControl> _actionCamera();
 
     MockLink* _mockLink = nullptr;
     Vehicle* _vehicle = nullptr;

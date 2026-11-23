@@ -6,6 +6,7 @@
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QSettings>
+#include <QtGui/QColor>
 #include <QtNetwork/QNetworkAccessManager>
 #include <QtNetwork/QNetworkReply>
 #include <QtQml/QQmlEngine>
@@ -1242,14 +1243,239 @@ bool VehicleCameraControl::_loadSettings(const QDomNodeList nodeList)
             _addFact(pFact, factName);
         }
     }
+    //-- Actions, texts and groups (older versions of QGC ignore them), listed with the parameters in definition order
+    const QStringList controls = _settings;
+    _settings.clear();
+    _loadElements(elem, QString(), controls);
     if(_nameToFactMetaDataMap.size() > 0) {
         _addFactGroup(this, "camera");
         _processRanges();
-        _activeSettings = _settings;
+        _activeSettings = _withoutEmptyGroups(_settings);
         emit activeSettingsChanged();
         return true;
     }
     return false;
+}
+
+void VehicleCameraControl::_loadElements(const QDomElement& parentElem, const QString& groupName,
+                                         const QStringList& controls)
+{
+    for (QDomElement elem = parentElem.firstChildElement(); !elem.isNull(); elem = elem.nextSiblingElement()) {
+        const QString tag = elem.tagName();
+        QString name;
+        if (tag == kParameter) {
+            name = elem.attribute(kName);
+            if (!controls.contains(name) || _settings.contains(name)) {
+                continue;
+            }
+        } else if (tag == kAction) {
+            name = _loadAction(elem);
+        } else if (tag == kText) {
+            name = _loadText(elem);
+        } else if (tag == kGroup) {
+            if (!groupName.isEmpty()) {
+                qCWarning(VehicleCameraControlLog)
+                    << "Groups can't be nested, the content belongs to group:" << groupName;
+                _loadElements(elem, groupName, controls);
+                continue;
+            }
+            //-- A group that can't be loaded still has its content shown, like older versions of QGC do
+            const QString group = _loadGroup(elem);
+            if (!group.isEmpty()) {
+                _settings.append(group);
+            }
+            _loadElements(elem, group, controls);
+            continue;
+        }
+        if (name.isEmpty()) {
+            continue;
+        }
+        _settings.append(name);
+        if (!groupName.isEmpty()) {
+            _groupOf[name] = groupName;
+        }
+    }
+}
+
+bool VehicleCameraControl::_isNameInUse(const QString& name) const
+{
+    return _nameToFactMetaDataMap.contains(name) || _textDefs.contains(name) || _groupDefs.contains(name);
+}
+
+QString VehicleCameraControl::_loadGroup(const QDomElement& groupElem)
+{
+    QString groupName = groupElem.attribute(kName);
+    if (groupName.isEmpty()) {
+        //-- Only a group that is excluded needs a name; '#' keeps these apart from camera parameter names
+        groupName = QStringLiteral("#group%1").arg(_groupDefs.size() + 1);
+    } else if (_isNameInUse(groupName)) {
+        qCWarning(VehicleCameraControlLog) << "Duplicate group name:" << groupName;
+        return QString();
+    }
+    QGCCameraGroup group;
+    group.title = groupElem.attribute(kTitle);
+    if (groupElem.hasAttribute(kColor)) {
+        const QString color = groupElem.attribute(kColor);
+        if (QColor::isValidColorName(color)) {
+            group.color = color;
+        } else {
+            qCWarning(VehicleCameraControlLog) << "Invalid color for group" << groupName << ":" << color;
+        }
+    }
+    if (groupElem.hasAttribute(kRadius)) {
+        bool ok = false;
+        const double radius = groupElem.attribute(kRadius).toDouble(&ok);
+        if (ok && (radius >= 0)) {
+            group.radius = radius;
+        } else {
+            qCWarning(VehicleCameraControlLog)
+                << "Invalid radius for group" << groupName << ":" << groupElem.attribute(kRadius);
+        }
+    }
+    _groupDefs[groupName] = group;
+    return groupName;
+}
+
+QStringList VehicleCameraControl::_withoutEmptyGroups(QStringList settings) const
+{
+    //-- The entries of a group follow it, so a group followed by none of them has nothing to show
+    for (qsizetype i = settings.size() - 1; i >= 0; i--) {
+        if (_groupDefs.contains(settings[i]) &&
+            ((i + 1 >= settings.size()) || (_groupOf.value(settings[i + 1]) != settings[i]))) {
+            settings.removeAt(i);
+        }
+    }
+    return settings;
+}
+
+QString VehicleCameraControl::_loadAction(const QDomElement& actionElem)
+{
+    QDomNode actionNode = actionElem;
+    QString actionName;
+    if (!read_attribute(actionNode, kName, actionName)) {
+        qCWarning(VehicleCameraControlLog) << "Action entry missing action name";
+        return QString();
+    }
+    if (_isNameInUse(actionName)) {
+        qCWarning(VehicleCameraControlLog) << "Duplicate action name:" << actionName;
+        return QString();
+    }
+    QGCCameraAction action;
+    if (!read_value(actionNode, kDescription, action.description)) {
+        qCWarning(VehicleCameraControlLog) << "Action" << actionName << "missing action description";
+        return QString();
+    }
+    read_attribute(actionNode, kHighlight, action.highlight);
+    QString type;
+    if (!read_attribute(actionNode, kType, type)) {
+        qCWarning(VehicleCameraControlLog) << "Action" << actionName << "missing action type";
+        return QString();
+    }
+    bool unknownType;
+    FactMetaData::ValueType_t factType = FactMetaData::stringToType(type, unknownType);
+    if (unknownType || factType == FactMetaData::valueTypeCustom || factType == FactMetaData::valueTypeString) {
+        qCWarning(VehicleCameraControlLog) << "Unsupported type for action" << actionName << ":" << type;
+        return QString();
+    }
+    FactMetaData* metaData = new FactMetaData(factType, actionName, this);
+    QQmlEngine::setObjectOwnership(metaData, QQmlEngine::CppOwnership);
+    metaData->setShortDescription(action.description);
+    metaData->setLongDescription(action.description);
+    metaData->setHasControl(false);
+    //-- Only a highlighted action needs the camera's value
+    metaData->setWriteOnly(!action.highlight);
+    if (!_loadActionButtons(actionNode, actionName, metaData, action)) {
+        delete metaData;
+        return QString();
+    }
+    _nameToFactMetaDataMap[actionName] = metaData;
+    Fact* pFact = new Fact(_compID, actionName, factType, this);
+    QQmlEngine::setObjectOwnership(pFact, QQmlEngine::CppOwnership);
+    //-- An action has no default: its value stays unset until the camera reports one
+    pFact->setMetaData(metaData);
+    QGCCameraParamIO* pIO = new QGCCameraParamIO(this, pFact, _vehicle);
+    QQmlEngine::setObjectOwnership(pIO, QQmlEngine::CppOwnership);
+    pIO->setActionOnly();
+    _paramIO[actionName] = pIO;
+    _addFact(pFact, actionName);
+    _actionDefs[actionName] = action;
+    return actionName;
+}
+
+QString VehicleCameraControl::_loadText(const QDomElement& textElem)
+{
+    QString textName = textElem.attribute(kName);
+    if (textName.isEmpty()) {
+        //-- Only a text that is excluded needs a name; '#' keeps these apart from camera parameter names
+        textName = QStringLiteral("#text%1").arg(_textDefs.size() + 1);
+    } else if (_isNameInUse(textName)) {
+        qCWarning(VehicleCameraControlLog) << "Duplicate text name:" << textName;
+        return QString();
+    }
+    QGCCameraText text;
+    text.text = textElem.text().trimmed();
+    if (textElem.hasAttribute(kSize)) {
+        const QString size = textElem.attribute(kSize);
+        if ((size == QLatin1String("default")) || (size == QLatin1String("small")) ||
+            (size == QLatin1String("large"))) {
+            text.size = size;
+        } else {
+            qCWarning(VehicleCameraControlLog) << "Invalid size for text" << textName << ":" << size;
+        }
+    }
+    if (textElem.hasAttribute(kAlign)) {
+        const QString align = textElem.attribute(kAlign);
+        if ((align == QLatin1String("left")) || (align == QLatin1String("center")) ||
+            (align == QLatin1String("right"))) {
+            text.align = align;
+        } else {
+            qCWarning(VehicleCameraControlLog) << "Invalid align for text" << textName << ":" << align;
+        }
+    }
+    QDomNode textNode = textElem;
+    read_attribute(textNode, kBold, text.bold);
+    _textDefs[textName] = text;
+    return textName;
+}
+
+bool VehicleCameraControl::_loadActionButtons(QDomNode actionNode, const QString& actionName, FactMetaData* metaData,
+                                              QGCCameraAction& action)
+{
+    QDomElement actionElem = actionNode.toElement();
+    QDomNodeList buttons = actionElem.elementsByTagName(kButton);
+    for (int i = 0; i < buttons.size(); i++) {
+        QDomNode buttonNode = buttons.item(i);
+        QString valueString;
+        if (!read_attribute(buttonNode, kValue, valueString)) {
+            qCWarning(VehicleCameraControlLog) << "Button of action" << actionName << "missing button value";
+            continue;
+        }
+        QGCCameraAction::Button button;
+        QString errorString;
+        if (!metaData->convertAndValidateRaw(valueString, false /* convertOnly */, button.value, errorString)) {
+            qCWarning(VehicleCameraControlLog)
+                << "Invalid button value for action" << actionName << " type:" << metaData->type()
+                << " value:" << valueString << " error:" << errorString;
+            continue;
+        }
+        if (!read_attribute(buttonNode, kLabel, button.label)) {
+            button.label = tr("Run");
+        }
+        QDomNode confirmNode = buttonNode.toElement().firstChildElement(kConfirm);
+        if (!confirmNode.isNull()) {
+            button.confirm = true;
+            button.confirmText = confirmNode.toElement().text();
+            read_attribute(confirmNode, kTitle, button.confirmTitle);
+            read_attribute(confirmNode, kYes, button.confirmYes);
+            read_attribute(confirmNode, kNo, button.confirmNo);
+        }
+        action.buttons.append(button);
+    }
+    if (action.buttons.isEmpty()) {
+        qCWarning(VehicleCameraControlLog) << "Action" << actionName << "has no valid buttons";
+        return false;
+    }
+    return true;
 }
 
 bool VehicleCameraControl::_handleLocalization(QByteArray& bytes)
@@ -1415,10 +1641,12 @@ void VehicleCameraControl::_updateActiveList()
     }
     QStringList active;
     for(QString key: _settings) {
-        if(!exclusionList.contains(key)) {
+        //-- Excluding a group excludes everything in it
+        if (!exclusionList.contains(key) && !exclusionList.contains(_groupOf.value(key))) {
             active.append(key);
         }
     }
+    active = _withoutEmptyGroups(active);
     if(active != _activeSettings) {
         qCDebug(VehicleCameraControlVerboseLog) << "Excluding" << exclusionList;
         _activeSettings = active;
@@ -2437,6 +2665,86 @@ void VehicleCameraControl::_paramDone()
     //-- All parameters loaded (or timed out)
     _paramComplete = true;
     emit parametersReady();
+}
+
+QVariantMap VehicleCameraControl::elementInfo(const QString& name) const
+{
+    QVariantMap info;
+    const auto textIt = _textDefs.constFind(name);
+    const auto groupIt = _groupDefs.constFind(name);
+    const auto actionIt = _actionDefs.constFind(name);
+    if (textIt != _textDefs.constEnd()) {
+        info[QStringLiteral("type")] = QStringLiteral("text");
+        info[QStringLiteral("text")] = textIt->text;
+        info[QStringLiteral("size")] = textIt->size;
+        info[QStringLiteral("bold")] = textIt->bold;
+        info[QStringLiteral("align")] = textIt->align;
+    } else if (groupIt != _groupDefs.constEnd()) {
+        info[QStringLiteral("type")] = QStringLiteral("group");
+        info[QStringLiteral("title")] = groupIt->title;
+        info[QStringLiteral("color")] = groupIt->color;
+        info[QStringLiteral("radius")] = groupIt->radius;
+    } else if (actionIt != _actionDefs.constEnd()) {
+        info[QStringLiteral("type")] = QStringLiteral("action");
+        QVariantList buttons;
+        for (const QGCCameraAction::Button& button : actionIt->buttons) {
+            buttons.append(QVariantMap{
+                {QStringLiteral("label"), button.label},
+                {QStringLiteral("value"), button.value},
+                {QStringLiteral("confirm"), button.confirm},
+                {QStringLiteral("confirmTitle"), button.confirmTitle},
+                {QStringLiteral("confirmText"), button.confirmText},
+                {QStringLiteral("confirmYes"), button.confirmYes},
+                {QStringLiteral("confirmNo"), button.confirmNo},
+            });
+        }
+        info[QStringLiteral("description")] = actionIt->description;
+        info[QStringLiteral("highlight")] = actionIt->highlight;
+        info[QStringLiteral("buttons")] = buttons;
+    } else if (_nameToFactMetaDataMap.contains(name)) {
+        info[QStringLiteral("type")] = QStringLiteral("parameter");
+    } else {
+        return info;
+    }
+    const QString groupName = _groupOf.value(name);
+    if (!groupName.isEmpty()) {
+        info[QStringLiteral("group")] = groupName;
+    }
+    return info;
+}
+
+void VehicleCameraControl::triggerAction(const QString& actionName, int buttonIndex)
+{
+    const auto it = _actionDefs.constFind(actionName);
+    if (it == _actionDefs.constEnd() || !_paramIO.value(actionName)) {
+        qCWarning(VehicleCameraControlLog) << "Unknown camera action:" << actionName;
+        return;
+    }
+    if (buttonIndex < 0 || buttonIndex >= it->buttons.size()) {
+        qCWarning(VehicleCameraControlLog) << "Invalid button" << buttonIndex << "for camera action:" << actionName;
+        return;
+    }
+    if (_pendingActions.contains(actionName)) {
+        qCDebug(VehicleCameraControlLog) << "Camera action still waiting for an answer:" << actionName;
+        return;
+    }
+    _pendingActions.append(actionName);
+    emit pendingActionsChanged();
+    _paramIO[actionName]->sendAction(it->buttons[buttonIndex].value);
+}
+
+void VehicleCameraControl::_actionDone(const QString& actionName, int result)
+{
+    if (_pendingActions.removeAll(actionName)) {
+        emit pendingActionsChanged();
+    }
+    if (result == PARAM_ACK_ACCEPTED) {
+        qCDebug(VehicleCameraControlLog) << "Camera action accepted:" << actionName;
+        return;
+    }
+    const QString reason = (result == kActionTimedOut) ? tr("no response from camera") : tr("rejected by camera");
+    qCWarning(VehicleCameraControlLog) << "Camera action failed:" << actionName << reason;
+    QGC::showAppMessage(tr("%1: %2").arg(_actionDefs.value(actionName).description, reason));
 }
 
 void VehicleCameraControl::_checkForVideoStreams()

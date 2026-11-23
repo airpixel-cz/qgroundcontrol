@@ -8,6 +8,7 @@
 
 class QGCVideoStreamInfo;
 class QNetworkAccessManager;
+class QDomElement;
 class QDomNode;
 class QDomNodeList;
 
@@ -37,6 +38,50 @@ public:
     QStringList  optNames;
     QStringList  optValues;
     QVariantList optVariants;
+};
+
+//-----------------------------------------------------------------------------
+/// \brief Camera definition action: buttons that each write their value to the
+/// camera parameter named like the action. Defined among the <parameters>.
+///
+struct QGCCameraAction
+{
+    struct Button
+    {
+        QString label;
+        QVariant value;
+        bool confirm = false;
+        QString confirmTitle;
+        QString confirmText;
+        QString confirmYes;  ///< Confirm button text, standard if empty
+        QString confirmNo;   ///< Cancel button text, standard if empty
+    };
+
+    QString description;
+    bool highlight = false;  ///< Mark the button whose value the parameter has
+    QList<Button> buttons;
+};
+
+//-----------------------------------------------------------------------------
+/// \brief Camera definition text: a line of text across the settings, defined among the <parameters>
+///
+struct QGCCameraText
+{
+    QString text;
+    QString size = QStringLiteral("default");  ///< default, small or large
+    bool bold = false;
+    QString align = QStringLiteral("left");    ///< left, center or right
+};
+
+//-----------------------------------------------------------------------------
+/// \brief Camera definition group: the entries defined inside it, shown on a background
+/// under its title and excluded together by its name
+///
+struct QGCCameraGroup
+{
+    QString title;
+    QString color;       ///< Background color, the palette's if empty
+    double radius = -1;  ///< Background corner radius, the standard one if negative
 };
 
 /// \brief MAVLink Camera API controller - connected to a real mavlink v2 camera
@@ -173,6 +218,12 @@ public:
     bool    incomingParameter   (Fact* pFact, QVariant& newValue) override;
     bool    validateParameter   (Fact* pFact, QVariant& newValue) override;
 
+    //-- Camera definition actions
+    Q_INVOKABLE QVariantMap elementInfo(const QString& name) const override;
+    Q_INVOKABLE void triggerAction(const QString& actionName, int buttonIndex) override;
+
+    QStringList pendingActions() const override { return _pendingActions; }
+
     static constexpr const char* kCondition       = "condition";
     static constexpr const char* kControl         = "control";
     static constexpr const char* kDefault         = "default";
@@ -207,6 +258,27 @@ public:
     static constexpr const char* kValue           = "value";
     static constexpr const char* kVendor          = "vendor";
     static constexpr const char* kVersion         = "version";
+
+    //-- Camera definition actions
+    static constexpr const char* kAction = "action";
+    static constexpr const char* kButton = "button";
+    static constexpr const char* kConfirm = "confirm";
+    static constexpr const char* kHighlight = "highlight";
+    static constexpr const char* kLabel = "label";
+    static constexpr const char* kTitle = "title";
+    static constexpr const char* kYes = "yes";
+    static constexpr const char* kNo = "no";
+
+    //-- Camera definition texts
+    static constexpr const char* kText = "text";
+    static constexpr const char* kSize = "size";
+    static constexpr const char* kBold = "bold";
+    static constexpr const char* kAlign = "align";
+
+    //-- Camera definition groups
+    static constexpr const char* kGroup = "group";
+    static constexpr const char* kColor = "color";
+    static constexpr const char* kRadius = "radius";
 
     static constexpr const char* kPhotoMode       = "PhotoCaptureMode";
     static constexpr const char* kPhotoLapse      = "PhotoLapse";
@@ -252,6 +324,7 @@ protected slots:
     virtual void    _checkForVideoStreams   ();
     virtual void    _onVideoManagerRecordingChanged  (bool recording);
     void            _paramDone              () override;
+    void _actionDone(const QString& actionName, int result) override;
 
 private:
     bool    _handleLocalization             (QByteArray& bytes);
@@ -259,6 +332,14 @@ private:
     bool    _loadCameraDefinitionFile       (QByteArray& bytes);
     bool    _loadConstants                  (const QDomNodeList nodeList);
     bool    _loadSettings                   (const QDomNodeList nodeList);
+    void _loadElements(const QDomElement& parentElem, const QString& groupName, const QStringList& controls);
+    bool _isNameInUse(const QString& name) const;
+    QString _loadAction(const QDomElement& actionElem);
+    QString _loadText(const QDomElement& textElem);
+    QString _loadGroup(const QDomElement& groupElem);
+    QStringList _withoutEmptyGroups(QStringList settings) const;
+    bool _loadActionButtons(QDomNode actionNode, const QString& actionName, FactMetaData* metaData,
+                            QGCCameraAction& action);
     void    _processRanges                  ();
     bool    _processCondition               (const QString condition);
     bool    _processConditionTest           (const QString conditionTest);
@@ -345,4 +426,11 @@ protected:
     QRectF                                  _trackingImageRect;
     QPointF                                 _trackingImagePoint;
     qreal                                   _trackingImageRadius = 0.0;
+
+    //-- Camera definition actions, listed in _settings in definition order
+    QStringList _pendingActions;
+    QMap<QString, QGCCameraAction> _actionDefs;
+    QMap<QString, QGCCameraText> _textDefs;
+    QMap<QString, QGCCameraGroup> _groupDefs;
+    QMap<QString, QString> _groupOf;  ///< Group of each entry defined inside one
 };

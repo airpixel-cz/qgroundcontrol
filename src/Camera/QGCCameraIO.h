@@ -23,14 +23,22 @@ public:
     void paramRequest(bool reset = true);
     void sendParameter(bool updateUI = false);
 
+    /// Sends value once, without changing the fact, and reports the camera's answer to
+    /// the control. Unlike a parameter write it is never resent: that could run the action twice.
+    void sendAction(const QVariant& value);
+
+    /// The fact exists only for an action: no ordinary parameter write ever goes out for it.
+    void setActionOnly() { _actionOnly = true; }
+
 private slots:
     void _paramWriteTimeout();
     void _paramRequestTimeout();
+    void _actionTimeout();
     void _factChanged(const QVariant &value);
     void _containerRawValueChanged(const QVariant &value);
 
 private:
-    void _sendParameter();
+    void _sendParameter(const QVariant& rawValue);
     QVariant _valueFromMessage(const char *value, uint8_t param_type);
 
     MavlinkCameraControlInterface *_control = nullptr;
@@ -41,9 +49,12 @@ private:
     bool _forceUIUpdate = false;
     bool _paramRequestReceived = false;
     bool _updateOnSet = false;
+    bool _actionOnly = false;
+    bool _actionPending = false;
     int _requestRetries = 0;
     int _sentRetries = 0;
     MAV_PARAM_EXT_TYPE _mavParamType = MAV_PARAM_EXT_TYPE_UINT8;
     QTimer _paramRequestTimer;
     QTimer _paramWriteTimer;
+    QTimer _actionTimer;
 };

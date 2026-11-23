@@ -62,6 +62,7 @@ class MavlinkCameraControlInterface : public FactGroup
     Q_PROPERTY(qreal zoomLevel READ zoomLevel WRITE setZoomLevel NOTIFY zoomLevelChanged)
     Q_PROPERTY(qreal focusLevel READ focusLevel WRITE setFocusLevel NOTIFY focusLevelChanged)
     Q_PROPERTY(QStringList activeSettings READ activeSettings NOTIFY activeSettingsChanged)
+    Q_PROPERTY(QStringList pendingActions READ pendingActions NOTIFY pendingActionsChanged)
     Q_PROPERTY(StorageStatus storageStatus READ storageStatus NOTIFY storageStatusChanged)
     Q_PROPERTY(qreal photoLapse READ photoLapse WRITE setPhotoLapse NOTIFY photoLapseChanged)
     Q_PROPERTY(int photoLapseCount READ photoLapseCount WRITE setPhotoLapseCount NOTIFY photoLapseCountChanged)
@@ -178,6 +179,27 @@ public:
     Q_INVOKABLE virtual void startTrackingPoint(QPointF point, double radius) = 0;
     Q_INVOKABLE virtual void stopTracking() = 0;
 
+    /// Camera definition entry named in activeSettings, by its type:
+    ///   {type: "parameter"}
+    ///   {type: "action", description, highlight, buttons}, each button being
+    ///       {label, value, confirm, confirmTitle, confirmText, confirmYes, confirmNo}
+    ///   {type: "text", text, size ("default", "small", "large"), bold, align ("left", "center", "right")}
+    ///   {type: "group", title, color (empty for the palette's), radius (negative for the standard one)}
+    /// An entry inside a group also has its group's name as "group"; its entries follow the group.
+    /// Empty for an unknown name.
+    Q_INVOKABLE virtual QVariantMap elementInfo(const QString& name) const
+    {
+        Q_UNUSED(name);
+        return {};
+    }
+
+    /// Sends the value of the action's button buttonIndex to the camera (PARAM_EXT_SET).
+    Q_INVOKABLE virtual void triggerAction(const QString& actionName, int buttonIndex)
+    {
+        Q_UNUSED(actionName);
+        Q_UNUSED(buttonIndex);
+    }
+
     virtual int version() const = 0;
     virtual QString modelName() const = 0;
     virtual QString vendor() const = 0;
@@ -211,7 +233,9 @@ public:
     virtual CameraMode cameraMode() const { return _cameraMode; }
 
     virtual StorageStatus storageStatus() const = 0;
-    virtual QStringList activeSettings() const = 0;
+    virtual QStringList activeSettings() const = 0;            ///< Parameters and actions to show, in definition order
+
+    virtual QStringList pendingActions() const { return {}; }  ///< Actions sent and not yet answered
     virtual quint32 storageFree() const = 0;
     virtual QString storageFreeStr() const = 0;
     virtual quint32 storageTotal() const = 0;
@@ -297,6 +321,7 @@ signals:
     void photoLapseCountChanged();
     void cameraModeChanged();
     void activeSettingsChanged();
+    void pendingActionsChanged();
     void storageFreeChanged();
     void storageTotalChanged();
     void batteryRemainingChanged();
@@ -325,7 +350,16 @@ signals:
 protected slots:
     virtual void _paramDone() = 0;
 
+    /// The camera answered an action with a PARAM_ACK result, or kActionTimedOut if it didn't answer.
+    virtual void _actionDone(const QString& actionName, int result)
+    {
+        Q_UNUSED(actionName);
+        Q_UNUSED(result);
+    }
+
 protected:
+    static constexpr int kActionTimedOut = -1;  ///< _actionDone() result when the camera didn't answer
+
     enum VideoCaptureStatus
     {
         VIDEO_CAPTURE_STATUS_STOPPED = 0,

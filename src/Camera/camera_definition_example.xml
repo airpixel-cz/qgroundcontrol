@@ -21,6 +21,8 @@
                         <exclude>CAM_PHOTOFMT</exclude>
                         <exclude>CAM_PHOTOQUAL</exclude>
                         <exclude>CAM_PHOTORES</exclude>
+                        <!-- Texts, actions and groups are excluded like parameters -->
+                        <exclude>TXT_PHOTO_HINT</exclude>
                     </exclusions>
                     <parameterranges>
                        <!-- This tells us when Camera Mode is set to Video mode, the CAM_ISO parameter has only a subset of its normal options. -->
@@ -214,6 +216,9 @@
                 <option name="Black &amp; White" value="3" />
             </options>
         </parameter>
+        <!-- Texts, actions and groups (Optional. Versions of QGC that don't support them ignore them) -->
+        <!-- They are shown where they are placed among the parameters. -->
+        <text name="TXT_PHOTO_HINT" size="small">Resolution and quality apply to JPEG images only.</text>
         <parameter name="CAM_PHOTORES" type="uint32" default="0">
             <description>Photo Resolution</description>
             <options>
@@ -243,6 +248,32 @@
                 <option name="Low" value="2" />
             </options>
         </parameter>
+        <group name="GRP_LENS" title="Lens">
+            <!-- Each click sends the button's value with PARAM_EXT_SET, named like the action -->
+            <action name="CAM_AFONCE" type="uint8">
+                <description>Autofocus</description>
+                <buttons>
+                    <button value="1" label="Focus Now" />
+                </buttons>
+            </action>
+            <!-- highlight="1" marks the button with the value the camera reports -->
+            <action name="CAM_NDFILTER" type="uint8" highlight="1">
+                <description>ND Filter</description>
+                <buttons>
+                    <button value="0" label="Off" />
+                    <button value="1" label="ND8" />
+                    <button value="2" label="ND64" />
+                </buttons>
+            </action>
+        </group>
+        <action name="CAM_FACTRESET" type="uint8">
+            <description>Factory Reset</description>
+            <buttons>
+                <button value="1" label="Reset">
+                    <confirm title="Factory Reset" yes="Reset" no="Cancel">All camera settings will be lost. Continue?</confirm>
+                </button>
+            </buttons>
+        </action>
     </parameters>
     <!-- Video Streams (Optional. If not present, the standard MAVLink video stream discovery will be used instead) -->
     <videostreams>
