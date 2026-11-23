@@ -11,6 +11,7 @@ For example, if your camera supports video mode you will be able to switch betwe
 
 ::: info
 Most of the settings that are displayed depend on the camera (they are defined in its [MAVLink Camera Definition File](https://mavlink.io/en/services/camera_def.html)).
+The camera can also add buttons, notes and grouped settings (see [Camera Definition Extensions](../../qgc-dev-guide/file_formats/camera_definition.md)).
 
 > A few common settings at the end are hard-coded: Photo Mode (Single/Time Lapse), Photo Interval (if Time Lapse), Reset Camera Defaults (sends a reset command to the camera), Format (storage), and for a camera with a video stream, Grid Lines, Telemetry Overlay and Display Fit (under Video Display)
 > :::

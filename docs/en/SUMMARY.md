@@ -126,6 +126,7 @@
     - [Plan](qgc-dev-guide/file_formats/plan.md)
     - [MAVLink Logs](qgc-dev-guide/file_formats/mavlink.md)
     - [Settings Override Files](qgc-dev-guide/file_formats/settings_override.md)
+    - [Camera Definition Extensions](qgc-dev-guide/file_formats/camera_definition.md)
   - [Developer Tools](qgc-dev-guide/tools/index.md)
     - [Mock Link](qgc-dev-guide/tools/mock_link.md)
   - [Command Line Options](qgc-dev-guide/command_line_options.md)
