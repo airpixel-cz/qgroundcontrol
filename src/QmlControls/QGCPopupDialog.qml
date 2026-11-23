@@ -47,6 +47,8 @@ Popup {
     property var    buttons:                Dialog.Ok
     property alias  acceptButtonEnabled:    acceptButton.enabled
     property alias  rejectButtonEnabled:    rejectButton.enabled
+    property string acceptButtonText                            // Replaces the accept button's standard text if set
+    property string rejectButtonText                            // Replaces the reject button's standard text if set
     property var    dialogProperties
     property bool   destroyOnClose:         true
     property bool   preventClose:           false
@@ -191,6 +193,13 @@ Popup {
         closePolicy = Popup.NoAutoClose
         if (buttons & Dialog.Cancel) {
             closePolicy |= Popup.CloseOnEscape
+        }
+
+        if (acceptButtonText !== "") {
+            acceptButton.text = acceptButtonText
+        }
+        if (rejectButtonText !== "") {
+            rejectButton.text = rejectButtonText
         }
     }
 
